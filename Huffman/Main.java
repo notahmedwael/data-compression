@@ -1,14 +1,15 @@
-import java.io.*;
 import javax.swing.*;
-import java.io.File;
-import java.util.HashMap;
-import java.util.PriorityQueue;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 // Represents a node in the Huffman tree
 class HuffmanNode implements Comparable<HuffmanNode> {
-    char data;
+    byte data;
     int frequency;
     HuffmanNode left, right;
 
@@ -21,14 +22,14 @@ class HuffmanNode implements Comparable<HuffmanNode> {
 // Represents the Huffman tree and provides methods to build and generate codes
 class HuffmanTree {
     // Build the Huffman tree based on character frequencies
-    public HuffmanNode buildTree(HashMap<Character, Integer> frequencies) {
+    public HuffmanNode buildTree(HashMap<Byte, Integer> frequencies) {
         PriorityQueue<HuffmanNode> priorityQueue = new PriorityQueue<>();
 
         // Create leaf nodes for each character and add them to the priority queue
-        for (char c : frequencies.keySet()) {
+        for (byte b : frequencies.keySet()) {
             HuffmanNode node = new HuffmanNode();
-            node.data = c;
-            node.frequency = frequencies.get(c);
+            node.data = b;
+            node.frequency = frequencies.get(b);
             priorityQueue.add(node);
         }
 
@@ -54,7 +55,7 @@ class HuffmanTree {
     }
 
     // Generate Huffman codes for each character in the tree
-    public void generateCodes(HuffmanNode root, String code, HashMap<Character, String> codes) {
+    public void generateCodes(HuffmanNode root, String code, HashMap<Byte, String> codes) {
         if (root != null) {
             if (root.left == null && root.right == null) {
                 // Leaf node, add the character and its code to the map
@@ -73,16 +74,13 @@ class HuffmanCoding {
 
     // Compress a file using Huffman coding
     public void compress(String inputFile, String outputFile) {
-        try (FileInputStream fis = new FileInputStream(inputFile);
-             FileOutputStream fos = new FileOutputStream(outputFile);
-             ObjectOutputStream oos = new ObjectOutputStream(fos)) {
-
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile))) {
             // Step 1: Calculate character frequencies
-            HashMap<Character, Integer> frequencies = new HashMap<>();
-            int data;
-            while ((data = fis.read()) != -1) {
-                char character = (char) data;
-                frequencies.put(character, frequencies.getOrDefault(character, 0) + 1);
+            HashMap<Byte, Integer> frequencies = new HashMap<>();
+            byte[] inputData = Files.readAllBytes(Path.of(inputFile));
+
+            for (byte data : inputData) {
+                frequencies.put(data, frequencies.getOrDefault(data, 0) + 1);
             }
 
             // Step 2: Build the Huffman tree
@@ -90,25 +88,23 @@ class HuffmanCoding {
             HuffmanNode root = huffmanTree.buildTree(frequencies);
 
             // Step 3: Generate Huffman codes
-            HashMap<Character, String> codes = new HashMap<>();
+            HashMap<Byte, String> codes = new HashMap<>();
             huffmanTree.generateCodes(root, "", codes);
 
             // Step 4: Write Huffman codes to the output file
-            oos.writeObject(codes);
-
-            // Step 5: Write compressed data to the output file
-            try {
-                fis.getChannel().position(0); // Reset the position of the FileInputStream to the beginning
-            } catch (IOException e) {
-                LOGGER.log(Level.SEVERE, "An error occurred while resetting file position", e);
+            for (byte data : codes.keySet()) {
+                writer.write(data + ":" + codes.get(data) + "\n");
             }
 
+            // Step 5: Separate codes from compressed data using a special character
+            writer.write("#####\n");
+
+            // Step 6: Write compressed data to the output file
             StringBuilder compressedData = new StringBuilder();
-            while ((data = fis.read()) != -1) {
-                char character = (char) data;
-                compressedData.append(codes.get(character));
+            for (byte data : inputData) {
+                compressedData.append(codes.get(data));
             }
-            fos.write(toByteArray(compressedData.toString()));
+            writer.write(compressedData.toString());
 
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "An error occurred during compression", e);
@@ -117,62 +113,55 @@ class HuffmanCoding {
 
     // Decompress a file using Huffman coding
     public void decompress(String inputFile, String outputFile) {
-        try (FileInputStream fis = new FileInputStream(inputFile);
-             ObjectInputStream ois = new ObjectInputStream(fis);
-             FileOutputStream fos = new FileOutputStream(outputFile)) {
-
+        try (BufferedReader reader = new BufferedReader(new FileReader(inputFile))) {
             // Step 1: Read Huffman codes from the input file
-            @SuppressWarnings("unchecked")
-            HashMap<Character, String> codes = (HashMap<Character, String>) ois.readObject();
+            List<String> lines = Files.readAllLines(Path.of(inputFile));
+            int separatorIndex = lines.indexOf("#####");
 
-            // Step 2: Read compressed data from the input file
-            StringBuilder compressedData = new StringBuilder();
-            int data;
-            while ((data = fis.read()) != -1) {
-                compressedData.append(byteToBinaryString((byte) data));
+            if (separatorIndex == -1) {
+                LOGGER.log(Level.SEVERE, "Separator not found in compressed data. Invalid format.");
+                return;
+            }
+
+            List<String> codesLines = lines.subList(0, separatorIndex);
+            String compressedDataLine = lines.get(separatorIndex + 1);
+
+            // Step 2: Parse Huffman codes
+            HashMap<Byte, String> codes = new HashMap<>();
+            for (String codeLine : codesLines) {
+                String[] parts = codeLine.split(":");
+                if (parts.length == 2) {
+                    byte data = Byte.parseByte(parts[0]);
+                    String code = parts[1];
+                    codes.put(data, code);
+                }
             }
 
             // Step 3: Decode the compressed data
-            StringBuilder decodedData = new StringBuilder();
+            StringBuilder compressedDataStringBuilder = new StringBuilder(compressedDataLine);
+            List<Byte> decodedData = new ArrayList<>();
             int start = 0;
-            for (int end = 1; end <= compressedData.length(); end++) {
-                String substring = compressedData.substring(start, end);
-                for (char c : codes.keySet()) {
-                    if (codes.get(c).equals(substring)) {
-                        decodedData.append(c);
-                        start = end;
+            while (start < compressedDataStringBuilder.length()) {
+                for (byte data : codes.keySet()) {
+                    String code = codes.get(data);
+                    if (compressedDataStringBuilder.substring(start).startsWith(code)) {
+                        decodedData.add(data);
+                        start += code.length();
                         break;
                     }
                 }
             }
 
             // Step 4: Write the decoded data to the output file
-            fos.write(decodedData.toString().getBytes());
+            byte[] decodedBytes = new byte[decodedData.size()];
+            for (int i = 0; i < decodedData.size(); i++) {
+                decodedBytes[i] = decodedData.get(i);
+            }
+            Files.write(Path.of(outputFile), decodedBytes, StandardOpenOption.CREATE);
 
-        } catch (IOException | ClassNotFoundException e) {
+        } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "An error occurred during decompression", e);
         }
-    }
-
-    // Convert a binary string to a byte array
-    private byte[] toByteArray(String binaryString) {
-        int len = binaryString.length();
-        byte[] data = new byte[(len + 7) / 8];
-        for (int i = 0; i < len; i++) {
-            if (binaryString.charAt(i) == '1') {
-                data[i / 8] |= (byte) (128 >> (i % 8));
-            }
-        }
-        return data;
-    }
-
-    // Convert a byte to a binary string
-    private String byteToBinaryString(byte b) {
-        StringBuilder binaryString = new StringBuilder();
-        for (int i = 7; i >= 0; i--) {
-            binaryString.append((b & (1 << i)) == 0 ? '0' : '1');
-        }
-        return binaryString.toString();
     }
 }
 
@@ -214,6 +203,10 @@ public class Main {
         // Handle the compress button action
         private void handleCompressButton() {
             JFileChooser fileChooser = new JFileChooser();
+
+            // Set the default directory to the desktop
+            fileChooser.setCurrentDirectory(new File(System.getProperty("user.home") + File.separator + "Desktop"));
+
             int result = fileChooser.showOpenDialog(this);
 
             if (result == JFileChooser.APPROVE_OPTION) {
@@ -234,6 +227,10 @@ public class Main {
         // Handle the decompress button action
         private void handleDecompressButton() {
             JFileChooser fileChooser = new JFileChooser();
+
+            // Set the default directory to the desktop
+            fileChooser.setCurrentDirectory(new File(System.getProperty("user.home") + File.separator + "Desktop"));
+
             int result = fileChooser.showOpenDialog(this);
 
             if (result == JFileChooser.APPROVE_OPTION) {
